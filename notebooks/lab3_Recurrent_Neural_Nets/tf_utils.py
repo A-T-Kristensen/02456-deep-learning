@@ -13,12 +13,13 @@ def sequence_loss_tensor(logits, targets, weights, num_classes,
                          softmax_loss_function=None, name=None):
     """Weighted cross-entropy loss for a sequence of logits (per example).
     """
-    with ops.op_scope([logits, targets, weights], name, "sequence_loss_by_example"):
+    name = "sequenceLoss" if name is None else name
+    with tf.variable_scope(name):
         probs_flat = tf.reshape(logits, [-1, num_classes])
         targets = tf.reshape(targets, [-1])
         if softmax_loss_function is None:
             crossent = nn_ops.sparse_softmax_cross_entropy_with_logits(
-                    probs_flat, targets)
+                    logits=probs_flat, labels=targets)
         else:
             crossent = softmax_loss_function(probs_flat, targets)
         crossent = crossent * tf.reshape(weights, [-1])
@@ -75,16 +76,18 @@ def encoder(inputs, lengths, name, num_units, reverse=False, swap=False):
 
         time = tf.constant(0)
 
-        state_shape = tf.concat(0, [tf.expand_dims(tf.shape(lengths)[0], 0),
+        state_shape = tf.concat(axis=0, values=[tf.expand_dims(tf.shape(lengths)[0], 0),
                                     tf.expand_dims(tf.constant(num_units), 0)])
         # state_shape = tf.Print(state_shape, [state_shape])
         state = tf.zeros(state_shape, dtype=tf.float32)
 
         if reverse:
-            inputs = tf.reverse(inputs, dims=[False, True, False])
+            # inputs = tf.reverse(inputs, dims=[False, True, False])
+            inputs = tf.reverse(inputs, dims=[1])
         inputs = tf.transpose(inputs, perm=[1, 0, 2])
         input_ta = tensor_array_ops.TensorArray(tf.float32, size=1, dynamic_size=True)
-        input_ta = input_ta.unpack(inputs)
+        # input_ta = input_ta.unpack(inputs)
+        input_ta = input_ta.unstack(inputs)
 
         output_ta = tensor_array_ops.TensorArray(tf.float32, size=1, dynamic_size=True)
 
@@ -94,10 +97,10 @@ def encoder(inputs, lengths, name, num_units, reverse=False, swap=False):
         def encoder_body(time, old_state, output_ta_t):
             x_t = input_ta.read(time)
 
-            con = tf.concat(1, [x_t, old_state])
+            con = tf.concat(axis=1, values=[x_t, old_state])
             z = tf.sigmoid(tf.matmul(con, W_z) + b_z)
             r = tf.sigmoid(tf.matmul(con, W_r) + b_r)
-            con = tf.concat(1, [x_t, r*old_state])
+            con = tf.concat(axis=1, values=[x_t, r*old_state])
             h = tf.tanh(tf.matmul(con, W_h) + b_h)
             new_state = (1-z)*h + z*old_state
 
@@ -108,12 +111,12 @@ def encoder(inputs, lengths, name, num_units, reverse=False, swap=False):
 
             def updatesome():
                 if reverse:
-                    return tf.select(
+                    return tf.where(
                         tf.greater_equal(time, max_sequence_length-lengths),
                         new_state,
                         old_state)
                 else:
-                    return tf.select(tf.less(time, lengths), new_state, old_state)
+                    return tf.where(tf.less(time, lengths), new_state, old_state)
 
             if reverse:
                 state = tf.cond(
@@ -130,10 +133,11 @@ def encoder(inputs, lengths, name, num_units, reverse=False, swap=False):
         time, state, output_ta = tf.while_loop(encoder_cond, encoder_body, loop_vars, swap_memory=swap)
 
         enc_state = state
-        enc_out = tf.transpose(output_ta.pack(), perm=[1, 0, 2])
+        enc_out = tf.transpose(output_ta.stack(), perm=[1, 0, 2])
 
         if reverse:
-            enc_out = tf.reverse(enc_out, dims=[False, True, False])
+            # enc_out = tf.reverse(enc_out, dims=[False, True, False])
+            enc_out = tf.reverse(enc_out, dims=[1])
 
         enc_out.set_shape([None, None, num_units])
 
@@ -184,7 +188,8 @@ def decoder(initial_state, target_input, target_len, num_units,
         # make tensor array for inputs, these are dynamic and used in the while-loop
         # these are not in the api documentation yet, you will have to look at github.com/tensorflow
         input_ta = tensor_array_ops.TensorArray(tf.float32, size=1, dynamic_size=True)
-        input_ta = input_ta.unpack(inputs)
+        # input_ta = input_ta.unpack(inputs)
+        input_ta = input_ta.unstack(inputs)
 
         # function to the while-loop, for early stopping
         def decoder_cond(time, state, output_ta_t):
@@ -232,8 +237,8 @@ def decoder(initial_state, target_input, target_len, num_units,
                                                         loop_vars,
                                                         swap_memory=swap)
         # returning to batch major
-        dec_out = tf.transpose(output_ta.pack(), perm=[1, 0, 2])
-        valid_dec_out = tf.transpose(valid_output_ta.pack(), perm=[1, 0, 2])
+        dec_out = tf.transpose(output_ta.stack(), perm=[1, 0, 2])
+        valid_dec_out = tf.transpose(valid_output_ta.stack(), perm=[1, 0, 2])
         return dec_out, valid_dec_out
 
 
@@ -306,13 +311,14 @@ def attention_decoder(attention_input, attention_lengths, initial_state, target_
 
         # TODO: don't use convolutions!
         # TODO: fix the bias (b_a)
-        hidden = tf.reshape(attention_input, tf.pack([-1, attn_len, 1, attention_dims]))
+        hidden = tf.reshape(attention_input, tf.stack([-1, attn_len, 1, attention_dims]))
         part1 = tf.nn.conv2d(hidden, U_a, [1, 1, 1, 1], "SAME")
         part1 = tf.squeeze(part1, [2])  # squeeze out the third dimension
 
         inputs = tf.transpose(target_input, perm=[1, 0, 2])
         input_ta = tensor_array_ops.TensorArray(tf.float32, size=1, dynamic_size=True)
-        input_ta = input_ta.unpack(inputs)
+        # input_ta = input_ta.unpack(inputs)
+        input_ta = input_ta.unstack(inputs)
 
         def decoder_cond(time, state, output_ta_t, attention_tracker):
             return tf.less(time, max_sequence_length)
@@ -339,10 +345,10 @@ def attention_decoder(attention_input, attention_lengths, initial_state, target_
                 context = tf.reduce_sum(tf.expand_dims(alpha, 2) * tf.squeeze(hidden), [1])
 
                 # GRU
-                con = tf.concat(1, [x_t, old_state, context])
+                con = tf.concat(axis=1, values=[x_t, old_state, context])
                 z = tf.sigmoid(tf.matmul(con, W_z) + b_z)
                 r = tf.sigmoid(tf.matmul(con, W_r) + b_r)
-                con = tf.concat(1, [x_t, r*old_state, context])
+                con = tf.concat(axis=1, values=[x_t, r*old_state, context])
                 c = tf.tanh(tf.matmul(con, W_c) + b_c)
                 new_state = (1-z)*c + z*old_state
 
@@ -366,8 +372,8 @@ def attention_decoder(attention_input, attention_lengths, initial_state, target_
                                                         loop_vars,
                                                         swap_memory=swap)
 
-        dec_out = tf.transpose(output_ta.pack(), perm=[1, 0, 2])
-        valid_dec_out = tf.transpose(valid_output_ta.pack(), perm=[1, 0, 2])
-        valid_attention_tracker = tf.transpose(valid_attention_tracker.pack(), perm=[1, 0, 2])
+        dec_out = tf.transpose(output_ta.stack(), perm=[1, 0, 2])
+        valid_dec_out = tf.transpose(valid_output_ta.stack(), perm=[1, 0, 2])
+        valid_attention_tracker = tf.transpose(valid_attention_tracker.stack(), perm=[1, 0, 2])
 
         return dec_out, valid_dec_out, valid_attention_tracker
