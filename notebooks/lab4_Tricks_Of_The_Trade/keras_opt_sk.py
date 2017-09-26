@@ -21,11 +21,15 @@ from keras.optimizers import Adadelta, Adam, rmsprop
 from keras.utils import np_utils
 from keras import regularizers
 
+from sklearn.model_selection import GridSearchCV
+from keras.wrappers.scikit_learn import KerasClassifier
+
+
 # For Gridsearching
 
-from hyperopt import Trials, STATUS_OK, tpe
-from hyperas import optim
-from hyperas.distributions import choice, uniform, conditional
+#from hyperopt import Trials, STATUS_OK, tpe
+#from hyperas import optim
+#from hyperas.distributions import choice, uniform, conditional
 
 #from sklearn.model_selection import GridSearchCV
 #from keras.wrappers.scikit_learn import KerasClassifier
@@ -38,6 +42,8 @@ config = tf.ConfigProto()
 config.gpu_options.per_process_gpu_memory_fraction = 0.8
 config.gpu_options.visible_device_list = "0"
 set_session(tf.Session(config=config))
+
+nb_class = None
 
 
 # Encoder
@@ -61,21 +67,26 @@ def data():
 	labels = label_encoder.transform(train.species)
 	classes = list(label_encoder.classes_)
 
+	global nb_class
+	if nb_class is None:
+		nb_class = len(classes)
+
+
 	train = train.drop(['species', 'id'], axis=1)
 	test = test.drop('id', axis=1)
 
 	# standardize train features
 	scaler = StandardScaler().fit(train.values)
 	scaled_train = scaler.transform(train.values)
-
+	'''
 	# split train data into train and validation
 	sss = StratifiedShuffleSplit(test_size=0.1, random_state=23)
 	for train_index, valid_index in sss.split(scaled_train, labels):
 		X_train, X_valid = scaled_train[train_index], scaled_train[valid_index]
 		y_train, y_valid = labels[train_index], labels[valid_index]
 		
-	nb_class = len(classes)
-
+	'''
+	'''
 	# reshape train data
 	x_train = np.zeros((len(X_train), nb_features, 3))
 	x_train[:, :, 0] = X_train[:, :nb_features]
@@ -90,12 +101,19 @@ def data():
 
 	y_train = np_utils.to_categorical(y_train, nb_class)
 	y_test = np_utils.to_categorical(y_valid, nb_class)
+	'''
+	x_test = np.zeros((len(scaled_train), nb_features, 3))
+	x_test[:, :, 0] = scaled_train[:, :nb_features]
+	x_test[:, :, 1] = scaled_train[:, nb_features:128]
+	x_test[:, :, 2] = scaled_train[:, 128:]
 
-	return x_train, y_train, x_test, y_test
+	#y = np_utils.to_categorical(labels, labels)
+
+	return x_test, labels
 
 # No outcommented in the model!!!
 
-def model(x_train, y_train, x_test, y_test):
+def create_model():
 
 	# This fails in the end when calling best model, we we should print parameters at run time
 	#if K.backend() == 'tensorflow': # Hyperopt is not good at clearing memory when done
@@ -105,64 +123,53 @@ def model(x_train, y_train, x_test, y_test):
 	epochs=30
 
 	model = Sequential()
-	model.add(Convolution1D(filters={{choice([128, 256, 512, 1024])}}, kernel_size={{choice([1, 2, 4])}}, input_shape=(nb_features, 3), kernel_initializer='glorot_normal'))
+	model.add(Convolution1D(filters=1024, kernel_size=2, input_shape=(nb_features, 3), kernel_initializer='glorot_normal'))
 	model.add(Activation('relu'))
-	model.add(MaxPooling1D(pool_size={{choice([1, 2, 4])}}, strides={{choice([1, 2, 4])}}))
-	model.add(Dropout(rate = {{uniform(0, 1)}}))
+	model.add(MaxPooling1D(pool_size=2, strides=1))
+	model.add(Dropout(rate = 0.5))
 
 	model.add(Flatten())
 
-	model.add(Dense(units = {{choice([512, 1024, 2048])}}, kernel_regularizer=regularizers.l2(0.005), kernel_initializer='glorot_normal'))
+	model.add(Dense(units = 2048, kernel_regularizer=regularizers.l2(0.005), kernel_initializer='glorot_normal'))
 	model.add(Activation('elu'))
-	model.add(Dropout(rate = {{uniform(0, 1)}}))
+	model.add(Dropout(rate = 0.5))
 
 
-	model.add(Dense(units = {{choice([512, 1024, 2048])}}, kernel_regularizer=regularizers.l2(0.005), kernel_initializer='glorot_normal'))
+	model.add(Dense(units = 1024, kernel_regularizer=regularizers.l2(0.005), kernel_initializer='glorot_normal'))
 	model.add(Activation('elu'))
-	model.add(Dropout(rate = {{uniform(0, 1)}}))	
+	model.add(Dropout(rate = 0.5))	
 
 	model.add(Dense(nb_class, kernel_regularizer=regularizers.l2(0.01), kernel_initializer='glorot_normal'))
 	model.add(Activation('softmax'))
 
 	model.compile(loss='categorical_crossentropy',optimizer='nadam',metrics=['accuracy'])
 
-	hist = model.fit(x_train, y_train,
-			  batch_size=32,
-			  epochs=epochs,
-			  verbose=0,
-			  validation_data=(x_test, y_test))
-
-	train_loss = hist.history['loss'][epochs-1]
-	train_acc = hist.history['acc'][epochs-1]
-
-	val_score, val_acc = model.evaluate(x_test, y_test, verbose=0)
-	print()
-	print('Test loss', train_loss,' Test acc:', train_acc*100)
-	print('Val loss', val_score,' Val acc:', val_acc*100)
-	print()
-
-	return {'loss': val_acc, 'status': STATUS_OK, 'model': model}
+	return model
 
 # fix random seed for reproducibility
 
 if __name__ == '__main__':
 
-	best_run, best_model = optim.minimize(model=model,
-										  data=data,
-										  algo=tpe.suggest,
-										  max_evals=20,
-										  trials=Trials(),
-										  eval_space=True)
-	X_train_r, y_train, X_valid_r, y_valid = data()
-	print("Evalutation of best performing model:")
-	print(best_model.evaluate(X_valid_r, y_valid))
-	print("Best performing model chosen hyper-parameters:")
-	print(best_run)
+	gc.collect()
 
-	'''
-	Best performing model chosen hyper-parameters:
-	{'Activation': 0, 'Activation_1': 0, 'batch_size': 0, 'conditional': 0, 
-	'conditional_1': 0, 'filters': 0, 'filters_1': 2, 'filters_2': 1, 'filters_3': 0, 
-	'kernel_size': 1, 'kernel_size_1': 0, 'optimizer': 2, 'pool_size': 1, 'pool_size_1': 0, 
-	'rate': 0.17446946924623405, 'rate_1': 0.4210746743212972, 'rate_2': 0.5327645362478939}
-	'''
+	if K.backend() == 'tensorflow': # Hyperopt is not good at clearing memory when done
+		K.clear_session()	
+
+	model = KerasClassifier(build_fn=create_model, verbose=0)
+	# define the grid search parameters
+	batch_size = [10]
+	epochs = [10]
+	param_grid = dict(batch_size=batch_size, epochs=epochs)
+	grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=1)
+
+	X, Y = data()
+
+	grid_result = grid.fit(X, Y)
+
+	# summarize results
+	print("Best: %f using %s" % (grid_result.best_score_, grid_result.best_params_))
+	means = grid_result.cv_results_['mean_test_score']
+	stds = grid_result.cv_results_['std_test_score']
+	params = grid_result.cv_results_['params']
+	for mean, stdev, param in zip(means, stds, params):
+		print("%f (%f) with: %r" % (mean, stdev, param))
