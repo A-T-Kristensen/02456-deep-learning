@@ -116,6 +116,7 @@ def model(x_train, y_train, x_test, y_test):
 
 	model.add(Dense(units = {{choice([128, 256, 512])}}))
 	model.add(Activation({{choice(['relu', 'elu'])}}))
+	model.add(Dropout(rate = {{uniform(0, 1)}}))
 
 	model.add(Dense(nb_class))
 
@@ -146,3 +147,11 @@ if __name__ == '__main__':
 	print(best_model.evaluate(X_valid_r, y_valid))
 	print("Best performing model chosen hyper-parameters:")
 	print(best_run)
+
+'''
+Best performing model chosen hyper-parameters:
+{'Activation': 0, 'Activation_1': 0, 'batch_size': 0, 'conditional': 0, 
+'conditional_1': 0, 'filters': 0, 'filters_1': 2, 'filters_2': 1, 'filters_3': 0, 
+'kernel_size': 1, 'kernel_size_1': 0, 'optimizer': 2, 'pool_size': 1, 'pool_size_1': 0, 
+'rate': 0.17446946924623405, 'rate_1': 0.4210746743212972, 'rate_2': 0.5327645362478939}
+'''
